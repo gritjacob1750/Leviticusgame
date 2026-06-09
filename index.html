@@ -1,0 +1,646 @@
+HTML
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>레위기 RPG - 성막의 제사 (웹/모바일)</title>
+    <style>
+        /* 기본 스타일 초기화 및 모바일 풀스크린 설정 */
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+        body {
+            margin: 0; padding: 0; background-color: #222;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-height: 100vh; font-family: 'Malgun Gothic', sans-serif; overflow: hidden;
+        }
+        
+        /* 게임 화면 Canvas */
+        #gameCanvas {
+            background-color: #90EE90;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            max-width: 100%; max-height: 70vh;
+            aspect-ratio: 800 / 600;
+        }
+
+        /* 모바일 가상 패드 레이아웃 */
+        #mobileControls {
+            display: flex; justify-content: space-between; width: 100%; max-width: 800px;
+            padding: 10px 20px; background: #333; z-index: 10;
+        }
+        .d-pad { display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(3, 50px); gap: 5px; }
+        .action-pad { display: grid; grid-template-columns: repeat(2, 60px); gap: 10px; align-items: center; }
+        
+        /* 버튼 공통 스타일 */
+        .btn {
+            background: #555; color: white; border: none; border-radius: 8px;
+            font-weight: bold; font-size: 16px; display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 4px #222; cursor: pointer;
+        }
+        .btn:active { transform: translateY(4px); box-shadow: 0 0 #222; background: #777; }
+        .btn-up { grid-column: 2; grid-row: 1; }
+        .btn-left { grid-column: 1; grid-row: 2; }
+        .btn-right { grid-column: 3; grid-row: 2; }
+        .btn-down { grid-column: 2; grid-row: 3; }
+        
+        .btn-action { height: 60px; font-size: 18px; background: #d9534f; }
+        .btn-menu { height: 45px; font-size: 14px; background: #f0ad4e; }
+
+        /* PC에서는 가상패드 숨기기 (터치 디바이스에서만 보이게 하려면 제거 가능) */
+        @media (min-width: 1024px) {
+            /* #mobileControls { display: none; } */
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div id="mobileControls">
+        <div class="d-pad">
+            <button class="btn btn-up" id="btnUp">▲</button>
+            <button class="btn btn-left" id="btnLeft">◀</button>
+            <button class="btn btn-right" id="btnRight">▶</button>
+            <button class="btn btn-down" id="btnDown">▼</button>
+        </div>
+        <div class="action-pad">
+            <button class="btn btn-menu" id="btnQ">퀘스트(Q)</button>
+            <button class="btn btn-menu" id="btnI">인벤(I)</button>
+            <button class="btn btn-action" id="btnE" style="grid-column: span 2;">상호작용 (E)</button>
+        </div>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// ==================== 게임 변수 및 초기화 ====================
+const WORLD_W = 1600, WORLD_H = 1200;
+let player_x = 800, player_y = 700;
+let shekels = 0;
+let inventory = [];
+let message = "";
+let message_timer = 0;
+let start_time = Date.now();
+let has_net = false;
+
+let shop_open = false;
+let rabbi_menu_open = false;
+let quest_window_open = false;
+let inventory_window_open = false;
+let priest_menu_step = 0; // 0:대화안함, 1:제사선택, 2:제물선택
+let selected_sacrifice_type = 0;
+let priest_inventory_items = [];
+let priest_selected_indices = [];
+
+let enemies = [];
+let camera_x = 0, camera_y = 0;
+let quests_complete = { 1: false, 2: false, 3: false, 4: false, 5: false };
+
+let game_clear = false;
+let show_clear_window = false;
+let final_time_str = "";
+
+let barley_quest_active = false;
+let barley_grains = [];
+let pigeon_respawn_time = 0;
+
+// 구조체 배열 정의
+let trees = [
+    {x: 1200, y: 260, collected: false, sparkle: false, respawn_time: 0},
+    {x: 1300, y: 320, collected: false, sparkle: false, respawn_time: 0},
+    {x: 1360, y: 240, collected: false, sparkle: true, respawn_time: 0},
+    {x: 1440, y: 300, collected: false, sparkle: false, respawn_time: 0},
+    {x: 1180, y: 340, collected: false, sparkle: false, respawn_time: 0},
+];
+let pigeons = [
+    {x: 250, y: 450}, {x: 320, y: 480}, {x: 220, y: 520}, {x: 380, y: 430}, {x: 290, y: 550}
+];
+
+// 조작 입력 상태
+const keys = {};
+const touchControls = { up: false, down: false, left: false, right: false };
+
+// ==================== 그래픽 헬퍼 함수 ====================
+function drawPerson(shirtColor, x, y, name = "") {
+    let px = x - camera_x, py = y - camera_y;
+    // 머리
+    ctx.fillStyle = "rgb(255, 220, 185)";
+    ctx.beginPath(); ctx.arc(px, py - 18, 9, 0, Math.PI * 2); ctx.fill();
+    // 몸통
+    ctx.fillStyle = shirtColor;
+    ctx.fillRect(px - 8, py - 9, 16, 20);
+    // 팔, 다리 고정선
+    ctx.strokeStyle = shirtColor; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(px - 8, py - 7); ctx.lineTo(px - 14, py + 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px + 8, py - 7); ctx.lineTo(px + 14, py + 8); ctx.stroke();
+    ctx.strokeStyle = "#323232";
+    ctx.beginPath(); ctx.moveTo(px - 4, py + 11); ctx.lineTo(px - 6, py + 26); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px + 4, py + 11); ctx.lineTo(px + 6, py + 26); ctx.stroke();
+    
+    if (name) {
+        ctx.fillStyle = "white"; ctx.font = "12px 'Malgun Gothic'"; ctx.textAlign = "center";
+        ctx.fillText(name, px, py - 32);
+    }
+}
+
+function drawBird(x, y) {
+    let px = x - camera_x, py = y - camera_y;
+    ctx.fillStyle = "rgb(200, 200, 200)";
+    ctx.beginPath(); ctx.ellipse(px, py, 10, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgb(180, 180, 180)";
+    ctx.beginPath(); ctx.arc(px + 10, py - 2, 5, 0, Math.PI * 2); ctx.fill();
+}
+
+// ==================== 메인 그리기 루프 ====================
+function drawWorld() {
+    ctx.fillStyle = "#90EE90"; ctx.fillRect(0, 0, 800, 600); // 잔디 배경
+
+    // 중앙 광장
+    ctx.fillStyle = "#C8E6C8"; ctx.fillRect(600 - camera_x, 500 - camera_y, 400, 300);
+    // 성막 구역
+    ctx.fillStyle = "#B4A08C"; ctx.fillRect(640 - camera_x, 100 - camera_y, 320, 240);
+    ctx.fillStyle = "#8B5A2B"; ctx.beginPath();
+    ctx.moveTo(640 - camera_x, 100 - camera_y); ctx.lineTo(800 - camera_x, 30 - camera_y); ctx.lineTo(960 - camera_x, 100 - camera_y);
+    ctx.fill();
+    ctx.fillStyle = "#78503C"; ctx.fillRect(770 - camera_x, 170 - camera_y, 60, 90);
+
+    // 구역 구별선 및 숲 내부 영역
+    ctx.fillStyle = "#225522"; ctx.fillRect(1100 - camera_x, 160 - camera_y, 400, 360); // 나무숲
+    ctx.fillStyle = "#327832"; ctx.fillRect(200 - camera_x, 400 - camera_y, 240, 200);  // 비둘기숲
+    ctx.fillStyle = "#D2B464"; ctx.fillRect(1240 - camera_x, 760 - camera_y, 300, 300); // 보리밭
+    
+    // 보리 텍스처 그리기
+    ctx.strokeStyle = "#B48C32"; ctx.lineWidth = 2;
+    for(let i=0; i<25; i++) {
+        let bx = 1250 + i * 11 - camera_x;
+        ctx.beginPath(); ctx.moveTo(bx, 780 - camera_y); ctx.lineTo(bx + 4, 1040 - camera_y); ctx.stroke();
+    }
+
+    // 바닷가
+    ctx.fillStyle = "#4682B4"; ctx.fillRect(60 - camera_x, 700 - camera_y, 360, 400);
+
+    // 군사구역
+    ctx.fillStyle = "#808080"; ctx.fillRect(600 - camera_x, 960 - camera_y, 400, 200);
+
+    // 알바용 보리알 고정 그리기
+    barley_grains.forEach(bg => {
+        ctx.fillStyle = "#FFDF00"; ctx.beginPath(); ctx.arc(bg.x - camera_x, bg.y - camera_y, 6, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = "#DAA520"; ctx.stroke();
+    });
+
+    // 구역 이름 텍스트
+    ctx.fillStyle = "black"; ctx.font = "14px 'Malgun Gothic'"; ctx.textAlign = "center";
+    ctx.fillText("중앙 광장", 750 - camera_x, 630 - camera_y);
+    ctx.fillText("성막 구역", 750 - camera_x, 130 - camera_y);
+    ctx.fillStyle = "white";
+    ctx.fillText("나무숲", 1250 - camera_x, 190 - camera_y);
+    ctx.fillText("비둘기숲", 280 - camera_x, 420 - camera_y);
+    ctx.fillText("바닷가", 200 - camera_x, 880 - camera_y);
+    ctx.fillStyle = "black";
+    ctx.fillText("보리밭", 1350 - camera_x, 900 - camera_y);
+    ctx.fillStyle = "white";
+    ctx.fillText("군사구역", 750 - camera_x, 1040 - camera_y);
+}
+
+function drawObjects() {
+    // NPC 그리기
+    drawPerson("rgb(139, 90, 43)", 760, 200, "제사장");
+    drawPerson("rgb(80, 80, 80)", 700, 1020, "모병관");
+    drawPerson("rgb(180, 140, 50)", 1360, 840, "지주");
+    drawPerson("rgb(70, 130, 180)", 300, 840, "어부");
+    drawPerson("rgb(102, 0, 153)", 850, 600, "랍비");
+
+    // 상점 빌딩 상자
+    ctx.fillStyle = "#5A5A5A"; ctx.fillRect(450 - camera_x, 600 - camera_y, 80, 60);
+    ctx.fillStyle = "white"; ctx.fillText("상점", 490 - camera_x, 650 - camera_y);
+
+    // 적군 그리기
+    enemies.forEach(e => drawPerson("rgb(200,0,0)", e.x, e.y, "적군"));
+
+    // 유향 나무 그리기
+    trees.forEach(t => {
+        if (!t.collected) {
+            ctx.fillStyle = "#006400"; ctx.beginPath(); ctx.arc(t.x - camera_x, t.y - camera_y, 25, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "#654321"; ctx.fillRect(t.x - 8 - camera_x, t.y + 10 - camera_y, 16, 25);
+            if (t.sparkle) {
+                let pulse = Math.sin(Date.now() / 150) * 8 + 12;
+                ctx.strokeStyle = "#FFD700"; ctx.lineWidth = 3; ctx.beginPath();
+                ctx.arc(t.x - camera_x, t.y - camera_y, pulse, 0, Math.PI*2); ctx.stroke();
+            }
+        }
+    });
+
+    // 비둘기 그리기
+    pigeons.forEach(p => drawBird(p.x, p.y));
+
+    // 플레이어 캐릭터
+    drawPerson("rgb(220, 20, 60)", player_x, player_y, "나");
+}
+
+function drawHUD() {
+    // 최상단 상태바 상자
+    ctx.fillStyle = "#1E1E1E"; ctx.fillRect(0, 0, 800, 32);
+    
+    let elapsed = Math.floor((Date.now() - start_time) / 1000);
+    let min = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    let sec = String(elapsed % 60).padStart(2, '0');
+    
+    ctx.fillStyle = "white"; ctx.font = "14px 'Malgun Gothic'"; ctx.textAlign = "left";
+    ctx.fillText(`플레잉 타임: ${min}:${sec}`, 10, 20);
+    ctx.fillText(`세겔: ${shekels}   인벤토리(I): ${inventory.length}/8   퀘스트(Q)`, 250, 20);
+
+    // 대화 메시지 알림 상자
+    if (message_timer > 0) {
+        ctx.fillStyle = "#282828"; ctx.fillRect(40, 480, 720, 95);
+        ctx.strokeStyle = "#FFD700"; ctx.lineWidth = 2; ctx.strokeRect(40, 480, 720, 95);
+        
+        ctx.fillStyle = "white"; ctx.font = "14px 'Malgun Gothic'";
+        let lines = message.split('\n');
+        lines.forEach((line, idx) => {
+            ctx.fillText(line, 60, 505 + idx * 24);
+        });
+    }
+}
+
+// UI 창 화면에 수동 그리기 함수 패키지들
+function drawUIs() {
+    if (shop_open) {
+        ctx.fillStyle = "#282828"; ctx.fillRect(200, 60, 400, 410);
+        ctx.strokeStyle = "#FFD700"; ctx.lineWidth = 3; ctx.strokeRect(200, 60, 400, 410);
+        ctx.fillStyle = "white"; ctx.font = "16px 'Malgun Gothic'"; ctx.textAlign = "center";
+        ctx.fillText("=== 상점 ===", 400, 85);
+        
+        const shop_items = [
+            "1) 새 그물 구매 (1세겔)", "2) 몽둥이 구매 (1세겔)", "3) 활 구매 (1세겔)",
+            "4) 꿀 한 에바 구매 (1세겔)", "5) 누룩 한 에바 구매 (1세겔)", "6) 흠 없는 암 염소 구매 (2세겔)",
+            "7) 보리를 곱게 빻는다 (1세겔/보리 필요)", "8) 기름 구매 (1세겔)", "9) 흠 없는 숫양 구매 (2세겔)",
+            "[닫으려면 이 창 외부 터치]"
+        ];
+        ctx.textAlign = "left";
+        shop_items.forEach((text, i) => {
+            ctx.fillText(text, 220, 125 + i * 26);
+        });
+    }
+
+    if (rabbi_menu_open) {
+        ctx.fillStyle = "#1E1E32"; ctx.fillRect(100, 60, 600, 410);
+        ctx.strokeStyle = "#9933FF"; ctx.lineWidth = 3; ctx.strokeRect(100, 60, 600, 410);
+        ctx.fillStyle = "white"; ctx.font = "16px 'Malgun Gothic'"; ctx.textAlign = "center";
+        ctx.fillText("=== 랍비의 율법 상담소 (각 1세겔 필요) ===", 400, 85);
+        
+        const menus = [
+            "1) 번제의 제물이 궁금하십니까?", "2) 소제의 제물이 궁금하십니까?", "3) 화목제의 제물이 궁금하십니까?",
+            "4) 속죄제의 제물이 궁금하십니까? (일반 백성)", "5) 속건제의 제물이 궁금하십니까?",
+            "6) 소금은 어디서 구하는지 궁금하십니까?", "7) 유향은 어떻게 구하는지 궁금하십니까?",
+            "", "[닫으려면 이 창 외부 터치]"
+        ];
+        ctx.textAlign = "left";
+        menus.forEach((text, i) => ctx.fillText(text, 130, 135 + i * 26));
+    }
+
+    if (quest_window_open) {
+        ctx.fillStyle = "#142814"; ctx.fillRect(250, 150, 300, 280);
+        ctx.strokeStyle = "#00FF00"; ctx.lineWidth = 2; ctx.strokeRect(250, 150, 300, 280);
+        ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.fillText("< 퀘스트 창 >", 400, 180);
+        
+        const quest_lines = [
+            {id: 1, txt: "1) 번제를 드리시오."}, {id: 2, txt: "2) 소제를 드리시오."},
+            {id: 3, txt: "3) 속건제를 드리시오."}, {id: 4, txt: "4) 속죄제를 드리시오."},
+            {id: 5, txt: "5) 화목제를 드리시오."}
+        ];
+        quest_lines.forEach((q, idx) => {
+            ctx.fillStyle = quests_complete[q.id] ? "#FF3232" : "white";
+            ctx.fillText(q.txt + (quests_complete[q.id] ? " (완료)" : ""), 400, 230 + idx * 32);
+        });
+    }
+
+    if (inventory_window_open) {
+        ctx.fillStyle = "#32281E"; ctx.fillRect(250, 120, 300, 350);
+        ctx.strokeStyle = "#DAA520"; ctx.lineWidth = 2; ctx.strokeRect(250, 120, 300, 350);
+        ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.fillText("< 인벤토리 목록 >", 400, 150);
+        if(inventory.length === 0) {
+            ctx.fillText("가방이 비어 있습니다.", 400, 260);
+        } else {
+            inventory.forEach((item, idx) => ctx.fillText(`${idx + 1}. ${item}`, 400, 200 + idx * 24));
+        }
+    }
+
+    if (priest_menu_step === 1) {
+        ctx.fillStyle = "#282832"; ctx.fillRect(150, 120, 500, 320);
+        ctx.strokeStyle = "#DAA520"; ctx.lineWidth = 3; ctx.strokeRect(150, 120, 500, 320);
+        ctx.fillStyle = "white"; ctx.textAlign = "center"; ctx.fillText("=== 어떤 제사를 드리겠습니까? ===", 400, 150);
+        
+        const opts = ["1) 번제 (새의 번제)", "2) 소제", "3) 속건제", "4) 속죄제", "5) 화목제"];
+        opts.forEach((text, i) => {
+            ctx.fillStyle = quests_complete[i+1] ? "#FF3232" : "white";
+            ctx.fillText(text + (quests_complete[i+1] ? " (완료)" : ""), 400, 200 + i * 28);
+        });
+    } else if (priest_menu_step === 2) {
+        ctx.fillStyle = "#282832"; ctx.fillRect(120, 80, 560, 420);
+        ctx.strokeStyle = "#DAA520"; ctx.lineWidth = 3; ctx.strokeRect(120, 80, 560, 420);
+        
+        const type_names = {1:"번제", 2:"소제", 3:"속건제", 4:"속죄제", 5:"화목제"};
+        ctx.fillStyle = "white"; ctx.textAlign = "center";
+        ctx.fillText(`=== 제물 선택 (${type_names[selected_sacrifice_type]}) ===`, 400, 110);
+        ctx.font = "12px 'Malgun Gothic'"; ctx.fillText("터치하여 제물을 선택(*)한 후 가장 아래 완료를 누르세요.", 400, 135);
+        ctx.font = "14px 'Malgun Gothic'";
+
+        if (priest_inventory_items.length === 0) {
+            ctx.fillStyle = "#FF6464"; ctx.fillText("바칠 수 있는 아이템이 없습니다.", 400, 200);
+            ctx.fillStyle = "#64FF64"; ctx.fillText("1) 제사를 드린다 (제물 없음)", 400, 250);
+        } else {
+            priest_inventory_items.forEach((item, i) => {
+                let star = priest_selected_indices.includes(i) ? "[*] " : "[ ] ";
+                ctx.fillStyle = priest_selected_indices.includes(i) ? "#64FF64" : "white";
+                ctx.fillText(`${i+1}) ${star}${item}`, 400, 180 + i * 25);
+            });
+            ctx.fillStyle = "#FFD700";
+            ctx.fillText(`${priest_inventory_items.length + 1}) [ 제사를 드린다 ]`, 400, 180 + priest_inventory_items.length * 25 + 20);
+        }
+    }
+
+    if (show_clear_window) {
+        ctx.fillStyle = "#14143C"; ctx.fillRect(140, 140, 520, 320);
+        ctx.strokeStyle = "#FFD700"; ctx.lineWidth = 4; ctx.strokeRect(140, 140, 520, 320);
+        ctx.fillStyle = "white"; ctx.textAlign = "center";
+        ctx.fillText("🎉 모든 퀘스트를 완수했습니다! 🎉", 400, 185);
+        ctx.fillStyle = "#96FF96"; ctx.fillText(`게임 플레잉 타임: ${final_time_str}`, 400, 220);
+        ctx.fillStyle = "#FFE6C8";
+        ctx.fillText("제사를 드리는데 걸린 실제 시간: 7시간 30분", 400, 270);
+        ctx.fillText("실제로 든 비용: 2050만원", 400, 300);
+        ctx.fillText("세겔을 마련하는데 든 시간: 205일", 400, 330);
+    }
+}
+
+// ==================== 실시간 상태 업데이트 로직 ====================
+function updateGame() {
+    if (shop_open || rabbi_menu_open || quest_window_open || inventory_window_open || priest_menu_step > 0 || show_clear_window) {
+        // 메뉴 열려있으면 이동 차단
+    } else {
+        let speed = 5;
+        if (keys['arrowleft'] || keys['a'] || touchControls.left) player_x -= speed;
+        if (keys['arrowright'] || keys['d'] || touchControls.right) player_x += speed;
+        if (keys['arrowup'] || keys['w'] || touchControls.up) player_y -= speed;
+        if (keys['arrowdown'] || keys['s'] || touchControls.down) player_y += speed;
+    }
+
+    // 경계 제안
+    player_x = Math.max(20, Math.min(player_x, WORLD_W - 20));
+    player_y = Math.max(20, Math.min(player_y, WORLD_H - 20));
+
+    // 카메라 추적 고정 계산
+    camera_x = Math.max(0, Math.min(player_x - 400, WORLD_W - 800));
+    camera_y = Math.max(0, Math.min(player_y - 300, WORLD_H - 600));
+
+    if (message_timer > 0) message_timer--;
+
+    // 비둘기 실시간 리젠 리스트 로직
+    if (pigeons.length === 0) {
+        if (pigeon_respawn_time === 0) pigeon_respawn_time = Date.now();
+        else if (Date.now() - pigeon_respawn_time >= 5000) {
+            pigeons = [
+                {x: 250, y: 450}, {x: 320, y: 480}, {x: 220, y: 520}, {x: 380, y: 430}, {x: 290, y: 550}
+            ];
+            pigeon_respawn_time = 0;
+        }
+    }
+
+    // 유향 나무 자동 리젠
+    trees.forEach(t => {
+        if (t.collected && Date.now() - t.respawn_time >= 5000) {
+            t.collected = false;
+        }
+    });
+}
+
+// 상상 속 거리 계산 헬퍼
+function getDist(x1, y1, x2, y2) { return Math.hypot(x1 - x2, y1 - y2); }
+
+// ==================== 상호작용 핵심 엔진 (E버튼 / E키) ====================
+function triggerInteraction() {
+    let harvested = false;
+    if (barley_quest_active) {
+        for(let i = barley_grains.length - 1; i >= 0; i--) {
+            let bg = barley_grains[i];
+            if (getDist(player_x, player_y, bg.x, bg.y) < 30) {
+                barley_grains.splice(i, 1);
+                harvested = true;
+                if (barley_grains.length === 0) {
+                    if (inventory.length < 8) {
+                        inventory.push("보리"); shekels += 1;
+                        message = "보리알을 모두 수확했습니다!\n보상으로 보리 1개와 1세겔을 얻었습니다.";
+                    } else {
+                        shekels += 1;
+                        message = "보리알을 모두 수확했습니다!\n인벤토리가 가득 차 보리는 받지 못하고 1세겔만 얻었습니다.";
+                    }
+                    barley_quest_active = false;
+                } else {
+                    message = `보리알을 수확했습니다. (남은 보리알: ${barley_grains.length}개)`;
+                }
+                message_timer = 150; break;
+            }
+        }
+    }
+    if (harvested) return;
+
+    let enemy_hit = false;
+    for(let i = enemies.length - 1; i >= 0; i--) {
+        if (getDist(player_x, player_y, enemies[i].x, enemies[i].y) < 50) {
+            enemies.splice(i, 1); enemy_hit = true;
+            if (enemies.length === 0) {
+                shekels += 3; message = "적을 모두 소탕하여 3세겔을 획득했습니다.";
+            } else {
+                message = `적군을 물리쳤습니다! (남은 적: ${enemies.length}명)`;
+            }
+            message_timer = 150; break;
+        }
+    }
+    if (enemy_hit) return;
+
+    // 어부 소금 상호작용
+    if (getDist(player_x, player_y, 300, 840) < 60) {
+        if (!inventory.includes("소금")) {
+            if (shekels >= 1 && inventory.length < 8) {
+                shekels -= 1; inventory.push("소금"); message = "어부에게서 소금을 1세겔에 샀습니다.";
+            } else {
+                message = "돈이 부족하거나 가방(인벤토리) 공간이 없습니다.";
+            }
+        } else { message = "이미 소금을 가지고 있습니다."; }
+        message_timer = 150;
+    }
+    // 제사장 진입
+    else if (getDist(player_x, player_y, 760, 200) < 60) { priest_menu_step = 1; }
+    // 랍비 진입
+    else if (getDist(player_x, player_y, 850, 600) < 60) { rabbi_menu_open = true; }
+    // 모병관 퀘스트 수락 수동 트리거
+    else if (getDist(player_x, player_y, 700, 1020) < 60) {
+        if (enemies.length > 0) {
+            message = "모병관: 아직 물리치지 않은 적이 있습니다!";
+        } else {
+            enemies = [{x: 660, y: 1100}, {x: 800, y: 1040}, {x: 920, y: 1100}];
+            message = "모병관: 군사구역에 적군 3명이 나타났습니다! 무찔러주십시오.";
+        }
+        message_timer = 150;
+    }
+    // 지주 보리 알바
+    else if (getDist(player_x, player_y, 1360, 840) < 60) {
+        if (barley_quest_active) { message = "지주: 어서 밭에 떨어진 보리알들을 수확하게!"; }
+        else {
+            barley_quest_active = true; barley_grains = [];
+            for(let i=0; i<5; i++) {
+                barley_grains.push({
+                    x: Math.floor(Math.random() * (1500 - 1260)) + 1260,
+                    y: Math.floor(Math.random() * (1020 - 780)) + 780
+                });
+            }
+            message = "지주: 보리 수확 알바를 시작하게. 노란 보리알 5개를 주워오게.";
+        }
+        message_timer = 150;
+    }
+    // 상점 입장 가동
+    else if (getDist(player_x, player_y, 490, 630) < 80) { shop_open = true; }
+
+    // 유향 나무 채집 검사 루프
+    for (let t of trees) {
+        if (t.sparkle && !t.collected && getDist(player_x, player_y, t.x, t.y) < 60) {
+            if (inventory.length < 8) {
+                inventory.push("유향"); t.collected = true; t.respawn_time = Date.now();
+                message = "나무에서 유향을 채집했습니다!";
+            } else { message = "가방이 꽉 찼습니다."; }
+            message_timer = 120; return;
+        }
+    }
+
+    // 비둘기 잡기 검사 루프
+    for (let i = 0; i < pigeons.length; i++) {
+        if (getDist(player_x, player_y, pigeons[i].x, pigeons[i].y) < 50) {
+            if (has_net) {
+                if (inventory.length < 8) {
+                    inventory.push("비둘기"); pigeons.splice(i, 1); message = "비둘기를 포획했습니다!";
+                } else { message = "가방이 가득 찼습니다."; }
+            } else { message = "도구가 필요합니다. (상점에서 새 그물이 필요해요)"; }
+            message_timer = 120; break;
+        }
+    }
+}
+
+// ==================== 제사 검증 로직 수동 가동 ====================
+function trySacrifice() {
+    let chosen = priest_selected_indices.map(i => priest_inventory_items[i]).sort();
+    let success = false;
+
+    if (selected_sacrifice_type === 1) { // 번제
+        if (JSON.stringify(chosen) === JSON.stringify(["비둘기"])) success = true;
+    } else if (selected_sacrifice_type === 2) { // 소제
+        let req = ["고운 에바 가루", "기름", "소금", "유향"].sort();
+        if (JSON.stringify(chosen) === JSON.stringify(req)) success = true;
+    } else if (selected_sacrifice_type === 3) { // 속건제
+        if (JSON.stringify(chosen) === JSON.stringify(["흠 없는 숫양"])) success = true;
+    } else if (selected_sacrifice_type === 4) { // 속죄제
+        if (JSON.stringify(chosen) === JSON.stringify(["흠 없는 암 염소"])) success = true;
+    } else if (selected_sacrifice_type === 5) { // 화목제
+        if (JSON.stringify(chosen) === JSON.stringify(["흠 없는 암 염소"])) success = true;
+    }
+
+    // 아이템 인벤토리에서 실제 영구 삭감 처리
+    let itemsToRemove = priest_selected_indices.map(i => priest_inventory_items[i]);
+    itemsToRemove.forEach(item => {
+        let indexInInv = inventory.indexOf(item);
+        if (indexInInv > -1) inventory.splice(indexInInv, 1);
+    });
+
+    if (success) {
+        quests_complete[selected_sacrifice_type] = true;
+        let names = {1:"번제", 2:"소제", 3:"속건제", 4:"속죄제", 5:"화목제"};
+        message = `제사장: 올바른 제물을 드렸습니다!\n<${names[selected_sacrifice_type]}> 퀘스트를 성공했습니다!`;
+        
+        // 올 클리어 조건 판정 단락
+        if (Object.values(quests_complete).every(v => v === true) && !game_clear) {
+            game_clear = true; show_clear_window = true;
+            let elapsed_sec = Math.floor((Date.now() - start_time) / 1000);
+            final_time_str = `${Math.floor(elapsed_sec / 60)}분 ${elapsed_sec % 60}초`;
+        }
+    } else {
+        message = "제사 규정을 어겼습니다. 바친 제물이 허공으로 사라졌습니다.";
+    }
+    message_timer = 200; priest_menu_step = 0;
+}
+
+// ==================== 모바일 웹을 위한 UI 클릭/터치 감지 함수 ====================
+canvas.addEventListener('click', function(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) * (800 / rect.width);
+    const clickY = (e.clientY - rect.top) * (600 / rect.height);
+
+    if (show_clear_window) { show_clear_window = false; return; }
+
+    // 1. 상점 터치 처리
+    if (shop_open) {
+        if (clickX < 200 || clickX > 600 || clickY < 60 || clickY > 470) { shop_open = false; return; }
+        let itemIdx = Math.floor((clickY - 110) / 26);
+        if (itemIdx >= 0 && itemIdx <= 8) buyShopItem(itemIdx + 1);
+    }
+    // 2. 랍비 대화 메뉴 터치 처리
+    else if (rabbi_menu_open) {
+        if (clickX < 100 || clickX > 700 || clickY < 60 || clickY > 470) { rabbi_menu_open = false; return; }
+        let rabbiIdx = Math.floor((clickY - 110) / 26);
+        if (rabbiIdx >= 0 && rabbiIdx <= 6) askRabbi(rabbiIdx + 1);
+    }
+    // 3. 제사장 제사 대화창 터치 처리
+    else if (priest_menu_step === 1) {
+        if (clickX < 150 || clickX > 650 || clickY < 120 || clickY > 440) { priest_menu_step = 0; return; }
+        let qIdx = Math.floor((clickY - 180) / 28);
+        if (qIdx >= 0 && qIdx <= 4) {
+            selected_sacrifice_type = qIdx + 1; priest_menu_step = 2;
+            priest_inventory_items = [...inventory]; priest_selected_indices = [];
+        }
+    }
+    // 4. 제물 선택 수동 터치 토글 처리
+    else if (priest_menu_step === 2) {
+        if (clickX < 120 || clickX > 680 || clickY < 80 || clickY > 500) { priest_menu_step = 1; return; }
+        let totalItems = priest_inventory_items.length;
+        let selectIdx = Math.floor((clickY - 160) / 25);
+        
+        if (selectIdx >= 0 && selectIdx < totalItems) {
+            let found = priest_selected_indices.indexOf(selectIdx);
+            if (found > -1) priest_selected_indices.splice(found, 1);
+            else priest_selected_indices.push(selectIdx);
+        } else if (selectIdx === totalItems || (totalItems === 0 && Math.floor((clickY - 230)/25) === 0)) {
+            trySacrifice(); // 제사 가동
+        }
+    }
+    // 창 열렸을때 바깥 터치하면 꺼지기 룰 적용
+    else if (quest_window_open) { quest_window_open = false; }
+    else if (inventory_window_open) { inventory_window_open = false; }
+});
+
+// 상점 아이템 구매 비즈니스 서브 로직
+function buyShopItem(num) {
+    if (inventory.length >= 8 && num !== 7) {
+        message = "인벤토리가 가득 찼습니다! (최대 8칸)"; message_timer = 100; return;
+    }
+    let cost = 1, name = "";
+    if (num === 1) { name = "새 그물"; has_net = true; }
+    else if (num === 2) name = "몽둥이";
+    else if (num === 3) name = "활";
+    else if (num === 4) name = "꿀 한 에바";
+    else if (num === 5) name = "누룩 한 에바";
+    else if (num === 6) { name = "흠 없는 암 염소"; cost = 2; }
+    else if (num === 8) name = "기름";
+    else if (num === 9) { name = "흠 없는 숫양"; cost = 2; }
+    else if (num === 7) { // 보리 빻기 특별 룰
+        if (shekels >= 1) {
+            let idx = inventory.indexOf("보리");
+            if (idx > -1) {
+                shekels -= 1; inventory.splice(idx, 1); inventory.push("고운 에바 가루");
+                message = "보리를 빻아 고운 에바 가루를 만들었습니다!";
+            } else message = "인벤토리에 보리가 없습니다.";
+        } else message = "세겔이 부족합니다.";
+        message_timer = 120; return;
+    }
+
+    if (shekels >= cost) {
+        shekels -= cost; inventory.push(name); message = `${name} 구매완료.`;
+    } else message = "세겔(돈)이 부족합니다.";
+    message_timer = 120;
+}
